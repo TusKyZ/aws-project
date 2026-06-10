@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Test & lint tooling
+pytest>=8.0
+ruff>=0.6
+moto[s3,sqs,dynamodb,secretsmanager,sns]>=5.0

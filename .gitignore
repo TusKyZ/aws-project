@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+aws/
+
+# Environment / secrets — never commit
+.env
+.env.*
+*.pem
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!example.tfvars
+.terraform.lock.hcl
+terraform/plan.out
+
+# Lambda build artifacts
+build/
+dist/
+*.zip
+
+# Eval corpora (regenerated from seeded generator; results.md IS committed)
+eval/corpus/
+eval/output/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Claude Code local settings
+.claude/settings.local.json
