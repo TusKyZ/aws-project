@@ -1,0 +1,1 @@
+this is not a real parquet file - missing magic bytes, DuckDB read_parquet must reject it

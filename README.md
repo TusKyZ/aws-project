@@ -7,7 +7,7 @@ Event-driven data quality pipeline: new files landing in S3 are profiled with Du
 ## Status
 
 - [x] Phase 0 — Setup (repo, tooling, CI)
-- [ ] Phase 1 — Core pipeline (DuckDB profiler + rules engine)
+- [x] Phase 1 — Core pipeline (DuckDB profiler + rules engine)
 - [ ] Phase 2 — AI layer (Claude structured outputs)
 - [ ] Phase 3 — Eval harness
 - [ ] Phase 4 — Infrastructure (Terraform)
