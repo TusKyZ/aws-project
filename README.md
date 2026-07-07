@@ -8,7 +8,7 @@ Event-driven data quality pipeline: new files landing in S3 are profiled with Du
 
 - [x] Phase 0 — Setup (repo, tooling, CI)
 - [x] Phase 1 — Core pipeline (DuckDB profiler + rules engine)
-- [ ] Phase 2 — AI layer (Claude structured outputs)
+- [x] Phase 2 — AI layer (Claude structured outputs) — live smoke pending API key (`pytest -m live`)
 - [ ] Phase 3 — Eval harness
 - [ ] Phase 4 — Infrastructure (Terraform)
 - [ ] Phase 5 — Hardening & observability
@@ -22,3 +22,6 @@ pip install -r requirements-dev.txt
 ruff check .
 pytest -m "not live"
 ```
+
+Secrets: copy [.env.example](.env.example) and set `ANTHROPIC_API_KEY` in your shell.
+Live tests (real API calls, a few cents): `pytest -m live -s`.

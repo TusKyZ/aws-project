@@ -107,6 +107,34 @@ class AnomalyReport(BaseModel):
     summary: str
 
 
+class LlmUsage(BaseModel):
+    """Token usage from a single API call — the raw material for LlmCostUsd."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+
+
+class LlmOutcome(BaseModel):
+    """Result of one LLM analysis attempt (Phase 2).
+
+    The client never raises: any failure (missing key, auth, API error,
+    schema-invalid response, refusal) becomes `status="failed"` with a
+    `failure_reason`, so the pipeline degrades instead of retrying into
+    the DLQ. Feeds `AuditRecord.llm_status` / `failure_reason`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["ok", "failed"]
+    report: AnomalyReport | None = None
+    failure_reason: str | None = None
+    model: str | None = None
+    usage: LlmUsage | None = None
+    latency_ms: float | None = Field(default=None, ge=0.0)
+
+
 class AuditRecord(BaseModel):
     """DynamoDB item shape for the audit log (persisted in Phase 4/5).
 
