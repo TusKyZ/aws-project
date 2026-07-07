@@ -160,6 +160,20 @@ def check_schema_drift(
     ]
 
 
+_SEVERITY_PENALTY = {"high": 25, "medium": 10, "low": 5}
+
+
+def fallback_score(findings: list[RuleFinding]) -> int:
+    """Deterministic score when the LLM layer is skipped or down.
+
+    100 minus a per-finding severity penalty, floored at 5 (0 is reserved for
+    unparseable files). Keeps the audit record's score meaningful during
+    graceful degradation instead of defaulting to a lie like 100.
+    """
+    score = 100 - sum(_SEVERITY_PENALTY[f.severity] for f in findings)
+    return max(score, 5)
+
+
 def run_rules(
     profile: FileProfile,
     config: RulesConfig | None = None,

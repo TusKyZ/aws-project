@@ -32,20 +32,19 @@ from concurrent.futures import ThreadPoolExecutor
 
 from pydantic import BaseModel, ConfigDict
 
-from claude_client import DEFAULT_MODEL, ClaudeAnalyzer, EnvKeyProvider, build_payload
+from claude_client import (
+    DEFAULT_MODEL,
+    SONNET_MODEL,
+    ClaudeAnalyzer,
+    EnvKeyProvider,
+    build_payload,
+    estimate_cost_usd,
+)
 from generate_dirty_data import ANOMALY_CLASSES, Manifest
 from models import AnomalyReport, FileProfile, LlmOutcome, RuleFinding
 from profiler import profile_file
 from prompts import SYSTEM_PROMPT
 from rules_engine import run_rules
-
-SONNET_MODEL = "claude-sonnet-5"
-
-# $/MTok (input, output) — used only to price real `usage` token counts.
-PRICING_PER_MTOK: dict[str, tuple[float, float]] = {
-    "claude-opus-4-8": (5.0, 25.0),
-    "claude-sonnet-5": (3.0, 15.0),
-}
 
 ALL_ARMS = ("rules_only", "llm_only", "hybrid", "hybrid_sonnet")
 
@@ -224,12 +223,7 @@ def _score_arm(
                 predicted |= _classes_from_report(outcome.report)
             else:
                 llm_failures += 1
-            if outcome.usage is not None:
-                rate_in, rate_out = PRICING_PER_MTOK.get(outcome.model or "", (0.0, 0.0))
-                cost += (
-                    outcome.usage.input_tokens * rate_in
-                    + outcome.usage.output_tokens * rate_out
-                ) / 1_000_000
+            cost += estimate_cost_usd(outcome.model, outcome.usage)
             if outcome.latency_ms is not None:
                 latencies.append(outcome.latency_ms)
         if not spec.uses_llm or spec.union_with_rules:

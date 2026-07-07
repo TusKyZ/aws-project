@@ -27,7 +27,22 @@ from models import AnomalyReport, FileProfile, LlmOutcome, LlmUsage, RuleFinding
 from prompts import SYSTEM_PROMPT
 
 DEFAULT_MODEL = "claude-opus-4-8"
+SONNET_MODEL = "claude-sonnet-5"
 DEFAULT_MAX_TOKENS = 16_000
+
+# $/MTok (input, output) — single source for the eval harness and the
+# LlmCostUsd metric. Unknown models price at 0 rather than guessing.
+PRICING_PER_MTOK: dict[str, tuple[float, float]] = {
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-sonnet-5": (3.0, 15.0),
+}
+
+
+def estimate_cost_usd(model: str | None, usage: LlmUsage | None) -> float:
+    if model is None or usage is None:
+        return 0.0
+    rate_in, rate_out = PRICING_PER_MTOK.get(model, (0.0, 0.0))
+    return (usage.input_tokens * rate_in + usage.output_tokens * rate_out) / 1_000_000
 # Keep the HTTP budget comfortably under the 300s Lambda timeout so a hung
 # request degrades via LlmOutcome instead of killing the invocation.
 DEFAULT_TIMEOUT_SECONDS = 120.0

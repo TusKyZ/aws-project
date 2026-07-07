@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import decimal
+import os
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,33 @@ def _infer_format(path: Path) -> str:
     if suffix not in _READERS:
         raise ValueError(f"Unsupported file extension: {path.suffix!r} (expected csv/parquet/json)")
     return suffix
+
+
+def _infer_format_from_key(key: str) -> str:
+    """Format from an S3 key/URI suffix (Path would mangle `s3://`)."""
+    _, dot, suffix = key.rpartition(".")
+    suffix = suffix.lower()
+    if not dot or suffix not in _READERS:
+        raise ValueError(f"Unsupported file extension on key: {key!r} (expected csv/parquet/json)")
+    return suffix
+
+
+def _configure_s3(con: duckdb.DuckDBPyConnection) -> None:
+    """Prepare a connection for s3:// reads inside Lambda.
+
+    The layer bundles the httpfs extension, so LOAD succeeds offline; INSTALL
+    is only a local-dev fallback. Lambda's filesystem is read-only outside
+    /tmp, hence the home_directory override. Credentials come from the
+    execution role via DuckDB's credential_chain provider — no key material.
+    """
+    if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+        con.execute("SET home_directory='/tmp'")  # noqa: S108 - Lambda's only writable path
+    try:
+        con.execute("LOAD httpfs")
+    except duckdb.Error:
+        con.execute("INSTALL httpfs")
+        con.execute("LOAD httpfs")
+    con.execute("CREATE OR REPLACE SECRET sentinel_s3 (TYPE s3, PROVIDER credential_chain)")
 
 
 def _quote_ident(name: str) -> str:
@@ -90,18 +118,27 @@ def profile_file(
     yields a `FileProfile` with `profile_status=UNPARSEABLE`, which downstream
     treats as a data-quality finding (score 0), not an infrastructure error.
     """
-    path = Path(path)
-    fmt = file_format or _infer_format(path)
+    remote = isinstance(path, str) and path.startswith("s3://")
+    if remote:
+        fmt = file_format or _infer_format_from_key(path)
+        duck_path = path
+        uri = source_uri or path
+    else:
+        path = Path(path)
+        fmt = file_format or _infer_format(path)
+        uri = source_uri or str(path)
+        # DuckDB's S3 paths use forward slashes; as_posix keeps local Windows
+        # paths valid too.
+        duck_path = path.as_posix()
     reader = _READERS[fmt]
-    uri = source_uri or str(path)
-    # DuckDB's S3 paths use forward slashes; as_posix keeps local Windows paths valid too.
-    duck_path = path.as_posix()
 
     # SQL is built with an allowlisted `reader`, quote-escaped column identifiers,
     # and the path bound as a parameter (never interpolated) — so the S608
     # string-built-query warnings below are false positives, suppressed per line.
     con = duckdb.connect()
     try:
+        if remote:
+            _configure_s3(con)
         describe = con.execute(
             f"DESCRIBE SELECT * FROM {reader}(?)", [duck_path]  # noqa: S608
         ).fetchall()

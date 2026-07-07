@@ -20,6 +20,17 @@ def fixtures_dir() -> Path:
     return FIXTURES
 
 
+@pytest.fixture()
+def aws_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fake AWS credentials/region so moto never touches a real account."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("AWS_SECURITY_TOKEN", "testing")
+    monkeypatch.setenv("AWS_SESSION_TOKEN", "testing")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+
 @pytest.fixture(scope="session")
 def dirty_parquet(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Parquet built from the same rows as dirty.csv (same expected findings)."""
