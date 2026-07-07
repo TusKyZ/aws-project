@@ -18,10 +18,13 @@ select = [
 # S101: assert is the point of tests.
 # S608: test helpers build SQL from trusted, in-repo fixture paths (no user input).
 "tests/*" = ["S101", "S608"]
+# S311: random() here generates synthetic eval data, not key material.
+# E402: script entrypoints bootstrap sys.path before src imports.
+"eval/*" = ["S311", "E402"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "eval"]
 addopts = "-q --strict-markers"
 markers = [
     "live: tests that call real external APIs (deselected by default in CI)",

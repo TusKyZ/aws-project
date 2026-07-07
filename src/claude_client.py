@@ -92,7 +92,7 @@ class ClaudeAnalyzer:
                 latency_ms=(time.perf_counter() - start) * 1000.0,
             )
 
-        user_payload = _build_payload(profile, findings or [])
+        user_payload = build_payload(profile, findings or [])
 
         # Attempt 1 with the current key; on a 401, invalidate the cached key
         # (a rotated secret heals warm containers) and retry exactly once.
@@ -156,8 +156,12 @@ class ClaudeAnalyzer:
         return self._client
 
 
-def _build_payload(profile: FileProfile, findings: list[RuleFinding]) -> str:
-    """Serialize the analysis input deterministically (stable keys, no NaN)."""
+def build_payload(profile: FileProfile, findings: list[RuleFinding]) -> str:
+    """Serialize the analysis input deterministically (stable keys, no NaN).
+
+    Public because the eval harness (Phase 3) reuses it to build Batches API
+    requests that are byte-identical to what the live client sends.
+    """
     return json.dumps(
         {
             "profile": profile.model_dump(mode="json"),

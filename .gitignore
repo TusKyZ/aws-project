@@ -15,6 +15,7 @@ aws/
 # Environment / secrets — never commit
 .env
 .env.*
+!.env.example
 *.pem
 
 # Terraform
@@ -22,7 +23,9 @@ aws/
 *.tfstate
 *.tfstate.*
 *.tfvars
-!example.tfvars
+# Per-env config is non-secret by design (secrets live in Secrets Manager,
+# pushed out-of-band) — keep the env files versioned.
+!terraform/envs/*.tfvars
 .terraform.lock.hcl
 terraform/plan.out
 
