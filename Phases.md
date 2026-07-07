@@ -11,7 +11,7 @@ Each phase ends in a working, committed state. Don't start phase N+1 with phase 
 **Goal:** repo skeleton + tooling so every later phase has lint, tests, and CI from commit one.
 
 - Git repo + GitHub remote, `.gitignore` (Terraform state, `.env`, `__pycache__`, eval corpora)
-- Python 3.12 project: `pyproject.toml`, dependency management, `ruff`, `pytest` configured
+- Python 3.13 project (matches the Lambda runtime — dev == prod): `pyproject.toml`, dependency management, `ruff`, `pytest` configured
 - Directory skeleton from implementation_plan.md (`src/`, `tests/`, `eval/`, `terraform/` — empty modules OK)
 - GitHub Actions CI skeleton: lint + pytest on PR (Terraform steps come in Phase 4)
 
@@ -38,12 +38,13 @@ Each phase ends in a working, committed state. Don't start phase N+1 with phase 
 
 **Goal:** Claude Opus 4.8 turns a profile + rule findings into a validated `AnomalyReport`.
 
-- `claude_client.py`: structured outputs via `messages.parse()` + `AnomalyReport`, adaptive thinking, key from env var locally (Secrets Manager indirection arrives in Phase 4)
+- `claude_client.py`: structured outputs via `messages.parse()` + `AnomalyReport`, adaptive thinking, key from env var locally (Secrets Manager indirection arrives in Phase 4). Key handling is a pluggable provider so the Phase 4 swap is one class, not a rewrite.
+- Skeleton API inputs: `.env.example` documents `ANTHROPIC_API_KEY` (+ `SLACK_WEBHOOK_URL`); a missing key degrades gracefully (`llm_status=failed`, never an exception) — same path as a Secrets Manager outage in prod
 - System prompt: analyst role, untrusted-data scoping (prompt-injection hardening), built on Phase 1 contracts
 - Contract tests with recorded API responses: happy path, malformed response, refusal, 401 (rotation path logic)
-- **Live smoke test** (one real API call, dirty fixture file): confirm report quality is actually good before building infrastructure around it — if Opus output disappoints here, iterate the prompt now, cheaply
+- **Live smoke test** (one real API call, dirty fixture file): confirm report quality is actually good before building infrastructure around it — if Opus output disappoints here, iterate the prompt now, cheaply. Marked `live`, auto-skipped until the key exists.
 
-**Done when:** recorded-response tests green + one live call produces a sensible report on the dirty fixture. **Effort:** 1–2 days.
+**Done when:** recorded-response tests green (live smoke runs once the key is provided). **Effort:** 1–2 days.
 **Depends on:** Phase 1 (models, profile shape).
 
 ---
@@ -53,7 +54,7 @@ Each phase ends in a working, committed state. Don't start phase N+1 with phase 
 **Goal:** the differentiator — built early so prompt changes are measurable from now on, but the *committed* full run waits until the prompt freezes (Phase 6).
 
 - `eval/generate_dirty_data.py`: 6 anomaly classes, seeded RNG, 50 dirty/class + 200 clean
-- `eval/run_eval.py`: three arms (rules-only / LLM-only / hybrid), per-class P/R/F1, false-positive rate, cost from `usage` tokens, latency percentiles
+- `eval/run_eval.py`: four arms (rules-only / LLM-only / hybrid / hybrid-sonnet on `claude-sonnet-5`), per-class P/R/F1, false-positive rate, cost from `usage` tokens, latency percentiles — the sonnet arm turns "why Opus 4.8?" into a measured answer
 - `--smoke` mode (50 files, sync, <$5) — run it once now to validate the harness and get a first read on hybrid-vs-rules
 - Batches API submission path written, exercised with a tiny batch
 
@@ -66,8 +67,10 @@ Each phase ends in a working, committed state. Don't start phase N+1 with phase 
 
 **Goal:** the local pipeline runs in AWS, triggered by a real S3 upload.
 
-- Terraform modules: `s3` (EventBridge notifications), `eventing` (rule with suffix filter, SQS + DLQ + redrive, queue policy for EventBridge), `lambda` (DuckDB layer, 300s timeout, event source mapping with `ReportBatchItemFailures`, reserved concurrency), `storage` (DynamoDB, TTL on `expires_at`), `security` (secret containers only — values pushed out-of-band)
-- IAM least-privilege role per implementation_plan.md
+- Remote state first: S3 backend with `use_lockfile = true` (native S3 locking, GA since Terraform 1.11 — **no DynamoDB lock table**, that pattern is deprecated)
+- Terraform modules: `s3` (EventBridge notifications, block-public-access, SSE, TLS-only bucket policy), `eventing` (rule with suffix filter, SQS + DLQ + redrive, queue policy for EventBridge), `lambda` (Python 3.13 runtime, DuckDB layer, Powertools, 300s timeout, event source mapping with `ReportBatchItemFailures`, reserved concurrency), `storage` (DynamoDB, TTL on `expires_at`), `security` (secret containers only — values pushed out-of-band)
+- Multi-env structure: `envs/dev.tfvars` + `envs/prod.tfvars` (only dev deploys; prod proves the layout)
+- IAM least-privilege role per implementation_plan.md (no `cloudwatch:PutMetricData` — metrics ride EMF log lines)
 - `lambda_function.py`: SQS batch handler wiring Phase 1–2 modules; profiler switched to `s3://` paths; Secrets Manager fetch + cache + rotation path
 - Deploy sequence: skeleton echo-Lambda first (proves the event plumbing), then the real handler
 - SQS visibility timeout 1800s
@@ -85,9 +88,11 @@ Each phase ends in a working, committed state. Don't start phase N+1 with phase 
 - Drift check wired: `LATEST#<dataset>` item (TTL-exempt), dataset = first key prefix
 - Failure paths verified in AWS: unparseable file (no DLQ), secret-unavailable degradation (`llm_status=failed`), DLQ alarm fires on a forced poison message
 - `alerting.py`: SNS → Slack webhook on high severity
-- CloudWatch custom metrics + dashboard (`LlmCostUsd`, latency, `AnomalyCount`, `LlmFailureCount` alarm)
+- Powertools wired through the handler: structured JSON logs with SQS-message-ID correlation, custom metrics via EMF (`LlmCostUsd`, latency, `AnomalyCount`, `LlmFailureCount` alarm) + dashboard
 - AWS Budgets alarm ($20/month)
+- `RUNBOOK.md`: DLQ alarm → inspect + redrive (`start-message-move-task`), key rotation, `LlmFailureCount` response — then actually execute each procedure once against the deployed stack
 - CI completed: OIDC role, `terraform plan` on PR, apply-on-merge with approval gate
+- Evidence artifacts: dashboard screenshot + firing-alarm screenshot saved for the README
 
 **Done when:** every failure mode from MyNotes Q&A has been *demonstrated*, not just designed — each one is now a true interview story. **Effort:** 2–3 days.
 **Depends on:** Phase 4.
@@ -100,7 +105,7 @@ Each phase ends in a working, committed state. Don't start phase N+1 with phase 
 
 - Prompt freeze — no prompt edits after this point without re-running eval
 - Full eval via Batches API (~$15–30, <1 hr); commit `eval/results.md`
-- README: architecture diagram, eval table, cost-per-file, p99 latency, demo GIF (upload → Slack alert)
+- README: architecture diagram, eval table, cost-per-file, monthly infra cost table at 1K files/day, p99 latency, demo GIF (upload → Slack alert), dashboard screenshot
 - MyNotes.md sync pass: every Q&A answer matches what was actually built and measured; fill in real numbers
 - Resume bullets drafted from measured numbers
 

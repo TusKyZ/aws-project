@@ -44,6 +44,14 @@ Why each component was chosen, what it replaced, and the questions an interviewe
 ### Terraform modules, moto tests, GitHub Actions CI
 - **Why**: modules = each concern (eventing, storage, security) reviewable and reusable in isolation. moto = full pipeline test with zero AWS spend. CI posting `terraform plan` on PRs = how real teams gate infrastructure changes; signals I've worked the way teams work.
 
+### Terraform remote state: S3 backend + native lockfile (not a DynamoDB lock table)
+- **Why**: state must live remotely with locking or two `apply`s corrupt it. Since Terraform 1.11, the S3 backend locks natively via `use_lockfile = true` (S3 conditional writes); HashiCorp deprecated the `dynamodb_table` lock arguments. One bucket, zero lock infrastructure.
+- **Interview signal**: most tutorials still teach S3 + DynamoDB lock table. Knowing it's deprecated — and why (S3 conditional writes made the extra table redundant) — dates my knowledge to now, not to a 2022 blog post.
+
+### AWS Lambda Powertools (Logger + Metrics/EMF)
+- **Why**: what real teams run in Lambda. `Logger` gives structured JSON with a correlation ID (the SQS message ID) — grep one ID, see one file's entire trip through the pipeline. `Metrics` emits CloudWatch metrics via **EMF** (Embedded Metric Format): metrics ride out as log lines, so zero `PutMetricData` API calls, no added latency, and the IAM role drops a permission.
+- **Rejected alternative**: hand-rolled `print` + `put_metric_data` — works, but saying "EMF" in an interview beats describing custom metric plumbing.
+
 ---
 
 ## 2. Questions Interviewers Might Ask (and my answers)
@@ -52,7 +60,10 @@ Why each component was chosen, what it replaced, and the questions an interviewe
 Rules only catch what someone wrote a rule for. This system accepts arbitrary files with unknown schemas — there is no rule set to pre-write. The LLM does two things rules can't: flags *logical* contradictions on novel schemas, and writes the explanation/root-cause text a data engineer actually reads. And I don't claim this — I measure it: the eval suite shows per-class precision/recall for rules-only vs hybrid.
 
 ### "Why Opus 4.8 and not a cheaper model like Haiku?"
-The input is a 1–2K-token profile, not the file, so even the top model costs cents per file. I optimized for explanation quality, which is the product. If volume grew, the architecture already has the levers: skip-on-clean flag, reserved concurrency, Batches API, or swapping the model string to Haiku 4.5 — the structured-output contract is model-independent, so it's a one-line change plus an eval re-run to quantify the quality trade-off.
+The input is a 1–2K-token profile, not the file, so even the top model costs cents per file. I optimized for explanation quality, which is the product. If volume grew, the architecture already has the levers: skip-on-clean flag, reserved concurrency, Batches API, or swapping the model string — the structured-output contract is model-independent, so it's a one-line change plus an eval re-run to quantify the quality trade-off. And I don't have to speculate about the cheaper-model trade-off: the eval suite runs a **hybrid-sonnet arm** (`claude-sonnet-5`, $3/$15 vs Opus's $5/$25), so the choice is a measured number, not a preference.
+
+### "Claude 5 family exists — why are you on Opus 4.8?"
+Deliberate, and I can show the reasoning. Sonnet 5 is in the eval as its own arm — if it matches Opus on F1, the honest answer is "switch and save 40%," and I'd say that. Fable 5 I rejected without an eval arm: double the price ($10/$50), a 30-day data-retention requirement my use case doesn't want to inherit, and safety-classifier refusal handling that adds a failure path for zero benefit on this task. Newest ≠ right-sized; knowing when *not* to use the flagship is the same muscle as the prompt-caching answer.
 
 ### "What happens when the same file event is delivered twice?"
 Conditional write on `PK = key#etag` — second delivery is a no-op, no duplicate record, no duplicate LLM spend. I have a test asserting exactly one record and one LLM call for a duplicated event.
@@ -101,6 +112,12 @@ DynamoDB TTL on an `expires_at` attribute, default 90 days, configurable in Terr
 
 ### "Cold start?"
 DuckDB layer adds ~1–2s to cold start. Acceptable for an async audit pipeline (nobody is waiting on the response). If it mattered, provisioned concurrency — but paying for that here would be the wrong call, and saying so matters more than the feature.
+
+### "Why is there no VPC?" (the Cloud Engineer question)
+Because there's nothing in a private network to reach. The Lambda talks to S3, DynamoDB, SQS, Secrets Manager, and the Anthropic API — all over TLS with IAM auth. Putting it in a VPC would buy nothing and cost real things: NAT gateway (~$32/month idle, the single biggest cost trap in small serverless projects) or VPC endpoints per service, plus ENI cold-start overhead. If an RDS or ElastiCache ever entered the design, the Lambda moves into private subnets with gateway endpoints for S3/DynamoDB — I can draw that; I just refuse to build it for show. Deliberate absence with a reason beats cargo-cult presence.
+
+### "How do you manage Terraform state? What if two people apply at once?"
+Remote state in S3 with native locking — `use_lockfile = true` uses S3 conditional writes to take a lock file per operation, so a second `apply` fails fast instead of corrupting state. No DynamoDB lock table: that was the standard pattern until Terraform 1.11 deprecated it. State also never contains the API key (secret values are pushed out-of-band), and CI runs `plan` on PRs with `apply` gated behind a GitHub Environment approval — humans review the diff, the pipeline holds the credentials.
 
 ### "What breaks first at scale?"
 In order: Anthropic rate limits (mitigated by reserved concurrency acting as natural throttle), Lambda 15-min cap on huge files (partial profile → Fargate path), DynamoDB hot partition if one bucket prefix dominates (key already includes full path, distributing load). Having this ordered list ready signals systems thinking.

@@ -37,6 +37,9 @@ graph LR
 | LLM output contract | **Structured outputs** via `client.messages.parse()` + Pydantic — schema-guaranteed JSON | "Return ONLY valid JSON" prompting (no guarantee, retry loops) |
 | Event delivery | **EventBridge → SQS → Lambda** (buffering, retry policy, DLQ) | EventBridge → Lambda direct (no backpressure, weaker failure story) |
 | Audit store | **DynamoDB** (key-value lookups by file, serverless, on-demand billing) | RDS (overkill for append-only audit log; idle cost) |
+| Terraform state | **S3 backend + native lockfile** (`use_lockfile = true`, GA since TF 1.11) | DynamoDB lock table (deprecated by HashiCorp; building it new in 2026 reads tutorial-copied), local state (no locking, no team story) |
+| Lambda telemetry | **AWS Lambda Powertools** — Logger (structured JSON + correlation IDs) and Metrics (EMF: metrics emitted as log lines, zero API calls) | Hand-rolled `print` + `cloudwatch:PutMetricData` (per-call latency + cost, and an extra IAM permission) |
+| Networking | **No VPC** — Lambda reaches S3/DynamoDB/Secrets Manager over AWS endpoints with IAM + TLS | VPC (no private resources to protect; would add NAT/endpoint cost and cold-start pain for zero benefit — documented as a deliberate decision) |
 
 ## Proposed Changes
 
@@ -48,17 +51,24 @@ Modularized for separation of concerns; root module wires modules together.
 ```text
 .
 ├── .github/
+│   ├── dependabot.yml          # weekly pip + github-actions update PRs
 │   └── workflows/
 │       └── ci.yml              # pytest + terraform fmt/validate/plan on PR
+├── RUNBOOK.md                  # ops procedures: DLQ redrive, key rotation, alarm response
 ├── terraform/
+│   ├── backend.tf              # S3 remote state, use_lockfile = true (no DynamoDB lock table)
 │   ├── main.tf                 # Root module
 │   ├── variables.tf            # Global variables
 │   ├── outputs.tf              # Global outputs
 │   ├── providers.tf            # AWS provider config
+│   ├── envs/
+│   │   ├── dev.tfvars          # per-environment values (only dev is deployed;
+│   │   └── prod.tfvars         #  prod exists to prove the multi-env structure)
 │   └── modules/
-│       ├── s3/                 # Data lake bucket, EventBridge notifications enabled
+│       ├── s3/                 # Data lake bucket: EventBridge notifications, block-public-access,
+│       │                       #  SSE, TLS-only bucket policy
 │       ├── eventing/           # EventBridge rule, SQS queue + DLQ, redrive policy
-│       ├── lambda/             # Python 3.12 Lambda, DuckDB layer, IAM role
+│       ├── lambda/             # Python 3.13 Lambda, DuckDB layer, Powertools, IAM role
 │       ├── storage/            # DynamoDB table (PAY_PER_REQUEST, TTL on expires_at)
 │       ├── security/           # Secrets Manager (Anthropic key)
 │       └── observability/      # CloudWatch dashboard, alarms, SNS topic
@@ -179,12 +189,14 @@ report: AnomalyReport = response.parsed_output
 - **Secrets Manager**: `secretsmanager:GetSecretValue` on `arn:aws:secretsmanager:${region}:${account}:secret:anthropic_api_key-*`
 - **DynamoDB**: `dynamodb:PutItem`, `dynamodb:GetItem`, `dynamodb:Query` on `arn:aws:dynamodb:${region}:${account}:table/SentinelAuditLogs`
 - **SNS**: `sns:Publish` on the alert topic
-- **CloudWatch**: `cloudwatch:PutMetricData` (namespaced), `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents`
+- **CloudWatch Logs**: `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents` — and nothing else. Custom metrics go out via Powertools EMF (metrics embedded in log lines), so the role needs **no** `cloudwatch:PutMetricData`.
 
 ### [Component] Observability & Cost Controls
 
-- Custom CloudWatch metrics per file: `ProfileDurationMs`, `LlmLatencyMs`, `LlmCostUsd` (computed from `usage` tokens), `AnomalyCount`, `DataQualityScore`.
+- **AWS Lambda Powertools** end to end: `Logger` for structured JSON logs with a correlation ID taken from the SQS message ID (grep one ID, see one file's whole story), `Metrics` for EMF-embedded custom metrics — emitted as log lines, so zero `PutMetricData` API calls, no extra latency, and one less IAM permission.
+- Custom metrics per file (via EMF): `ProfileDurationMs`, `LlmLatencyMs`, `LlmCostUsd` (computed from `usage` tokens), `AnomalyCount`, `DataQualityScore`.
 - Dashboard module renders p50/p99 latency and daily LLM spend.
+- **RUNBOOK.md** at repo root: DLQ alarm → inspect + redrive (`aws sqs start-message-move-task`), Anthropic key rotation procedure, `LlmFailureCount` alarm response. Ops story on paper.
 - Lambda **reserved concurrency** (default 5) caps blast radius of an upload flood — bounds both Lambda and Anthropic spend.
 - Config flag `llm_skip_on_clean=true`: files passing every rule with score-relevant stats in normal bands skip the LLM call (cost lever for high-volume buckets).
 - **AWS Budgets alarm** (default $20/month) → SNS email. Personal-account guardrail: if anything runs away despite reserved concurrency, the human finds out from an email, not the bill.
@@ -192,7 +204,7 @@ report: AnomalyReport = response.parsed_output
 ### [Component] CI/CD (GitHub Actions)
 
 - On PR: `ruff` lint, `pytest` (unit + moto integration), `terraform fmt -check`, `terraform validate`, `terraform plan` posted as PR comment.
-- On merge to main: `terraform apply` against the dev workspace (manual approval gate for prod-style demo).
+- On merge to main: `terraform apply -var-file=envs/dev.tfvars` (dev auto-applies behind a GitHub Environment approval gate; `envs/prod.tfvars` exists to prove the multi-env structure — prod is never auto-applied in this project).
 - **AWS auth via OIDC**: GitHub Actions assumes a scoped IAM role through the GitHub OIDC provider — no long-lived AWS access keys stored in repo secrets. The role's trust policy is pinned to this repository and branch.
 
 ## Verification Plan
@@ -211,11 +223,12 @@ report: AnomalyReport = response.parsed_output
 - Generator is committed with a fixed RNG seed; the corpus itself is regenerated, not committed — fully reproducible.
 
 **Arms** (`eval/run_eval.py`):
-- Rules-only (free), LLM-only (profile without rule findings), hybrid (profile + rule findings) → **1,000 Opus calls per full run** (LLM-only + hybrid arms; rules-only costs nothing).
+- Rules-only (free), LLM-only (profile without rule findings), hybrid (profile + rule findings), and **hybrid-sonnet** (same hybrid pipeline on `claude-sonnet-5`) → **1,000 Opus + 500 Sonnet calls per full run** (rules-only costs nothing).
+- The hybrid-sonnet arm is the model-selection evidence: "I chose Opus 4.8 over the cheaper Sonnet 5 because the eval showed X" (or the honest inverse) beats any hand-waved model justification. Claude Fable 5 was rejected without an eval arm — 2× the price, a 30-day data-retention requirement, and refusal-classifier handling it doesn't need.
 - Emits per-class and macro precision / recall / F1, false-positive rate on clean files, and mean cost + p50/p99 latency per file (cost computed from response `usage` tokens, not estimated).
 
 **Cost & runtime** (estimates — verify against smoke-run `usage` data before the full run):
-- Full run submitted via the **Batches API** (50% discount; eval is offline, so batch latency is free money): ≈ **$15–30 per full run**, typically completes **within 1 hour**.
+- Full run submitted via the **Batches API** (50% discount; eval is offline, so batch latency is free money): ≈ **$20–35 per full run**, typically completes **within 1 hour**.
 - `--smoke` mode for development iteration: 5 dirty files/class + 20 clean = 50 files, synchronous with 4 workers ≈ **5–10 minutes, < $5**. Full runs are for committed results only.
 
 **Output**: results committed to `eval/results.md` and surfaced in the README. These are the resume numbers.
@@ -229,7 +242,7 @@ report: AnomalyReport = response.parsed_output
 
 - All tests green in CI; `terraform apply` from clean account succeeds.
 - Eval table populated with real numbers (target: hybrid F1 > rules-only F1 by a measurable margin).
-- README: architecture diagram, eval table, cost-per-file figure, p99 latency, demo GIF of Slack alert.
+- README: architecture diagram, eval table, cost-per-file figure, **monthly infra cost table at 1K files/day** (Lambda GB-s, DynamoDB on-demand, SQS, CloudWatch — "runs under $X/month" with the breakdown), p99 latency, demo GIF of Slack alert, dashboard screenshot.
 
 ## Blast Radius
 - **Infrastructure**: New S3 bucket, SQS queues, DynamoDB table, Lambda, SNS topic, CloudWatch resources. No impact on existing resources.
