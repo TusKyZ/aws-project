@@ -26,7 +26,8 @@ aws/
 # Per-env config is non-secret by design (secrets live in Secrets Manager,
 # pushed out-of-band) — keep the env files versioned.
 !terraform/envs/*.tfvars
-.terraform.lock.hcl
+# .terraform.lock.hcl is committed on purpose: it pins provider versions and
+# hashes (windows + linux) so every machine and CI resolves identical plugins.
 terraform/plan.out
 
 # Lambda build artifacts

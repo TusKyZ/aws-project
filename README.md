@@ -10,7 +10,7 @@ Event-driven data quality pipeline: new files landing in S3 are profiled with Du
 - [x] Phase 1 — Core pipeline (DuckDB profiler + rules engine)
 - [x] Phase 2 — AI layer (Claude structured outputs) — live smoke pending API key (`pytest -m live`)
 - [x] Phase 3 — Eval harness — LLM-arm smoke run pending API key (rules-only arm verified: macro F1 0.67 on the 50-file smoke corpus)
-- [ ] Phase 4 — Infrastructure (Terraform) — **all code written** (modules, handler, moto tests); `terraform apply` pending an AWS account + Terraform install (see [RUNBOOK.md](RUNBOOK.md) for the deploy sequence)
+- [ ] Phase 4 — Infrastructure (Terraform) — **all code written and validated offline**: `terraform validate` clean (Terraform 1.15.7, AWS provider v6.53, providers lock-pinned for windows+linux), Lambda layer builds at 27 MB zipped / 78 MB unzipped with dev==prod DuckDB parity enforced; `terraform apply` pending an AWS account (deploy sequence in [RUNBOOK.md](RUNBOOK.md))
 - [ ] Phase 5 — Hardening & observability
 - [ ] Phase 6 — Full eval & ship
 

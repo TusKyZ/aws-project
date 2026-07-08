@@ -119,6 +119,12 @@ Because there's nothing in a private network to reach. The Lambda talks to S3, D
 ### "How do you manage Terraform state? What if two people apply at once?"
 Remote state in S3 with native locking — `use_lockfile = true` uses S3 conditional writes to take a lock file per operation, so a second `apply` fails fast instead of corrupting state. No DynamoDB lock table: that was the standard pattern until Terraform 1.11 deprecated it. State also never contains the API key (secret values are pushed out-of-band), and CI runs `plan` on PRs with `apply` gated behind a GitHub Environment approval — humans review the diff, the pipeline holds the credentials.
 
+### "Why is `.terraform.lock.hcl` committed to the repo?"
+It pins exact provider versions *and* their cryptographic hashes, so every machine and CI resolves byte-identical plugins — `~> 6.0` alone would let a new laptop silently pick up a different minor version than the one the config was validated against. The lock file carries hashes for both `windows_amd64` (my laptop) and `linux_amd64` (CI runners) via `terraform providers lock -platform=...`; with only the default platform, CI's `terraform init` would fail hash verification.
+
+### "You develop on Windows. How do you build Linux binaries for Lambda?"
+`pip install --platform manylinux_* --python-version 3.13 --only-binary=:all:` cross-installs Linux wheels from any OS — no Docker needed because nothing compiles locally. The trap I actually hit: requesting only `manylinux2014` made pip silently *downgrade* DuckDB from 1.5.4 to 1.2.2, because newer DuckDB ships only `manylinux_2_28` wheels (fine on Lambda: python3.13 runs Amazon Linux 2023, glibc 2.34). The build script now accepts every manylinux tag up to that glibc ceiling and hard-fails if the layer's DuckDB version differs from the one the test suite runs against — dev==prod parity enforced by the build, not by hope.
+
 ### "What breaks first at scale?"
 In order: Anthropic rate limits (mitigated by reserved concurrency acting as natural throttle), Lambda 15-min cap on huge files (partial profile → Fargate path), DynamoDB hot partition if one bucket prefix dominates (key already includes full path, distributing load). Having this ordered list ready signals systems thinking.
 
