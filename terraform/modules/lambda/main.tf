@@ -26,6 +26,11 @@ variable "bucket_arn" {
   type = string
 }
 
+variable "kms_key_arn" {
+  description = "Project CMK the data bucket encrypts with — reads need kms:Decrypt."
+  type        = string
+}
+
 variable "queue_arn" {
   type = string
 }
@@ -124,6 +129,12 @@ resource "aws_iam_role_policy" "lambda" {
         Resource = var.bucket_arn
       },
       {
+        Sid      = "DecryptDataObjects"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = var.kms_key_arn
+      },
+      {
         Sid      = "ConsumeIngestQueue"
         Effect   = "Allow"
         Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
@@ -148,16 +159,27 @@ resource "aws_iam_role_policy" "lambda" {
         Resource = var.topic_arn
       },
       {
+        # No logs:CreateLogGroup — the group is a Terraform resource with
+        # retention set; the function must never recreate it retention-less.
         Sid      = "WriteLogs"
         Effect   = "Allow"
-        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "arn:aws:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${local.function_name}*"
       }
     ]
   })
 }
 
+# Explicit log group: retention-bounded (EMF metric lines are the bulk of
+# ingest volume) instead of the never-expiring group Lambda would auto-create.
+resource "aws_cloudwatch_log_group" "lambda" {
+  name              = "/aws/lambda/${local.function_name}"
+  retention_in_days = 30
+}
+
 resource "aws_lambda_function" "investigator" {
+  depends_on = [aws_cloudwatch_log_group.lambda]
+
   function_name = local.function_name
   role          = aws_iam_role.lambda.arn
 

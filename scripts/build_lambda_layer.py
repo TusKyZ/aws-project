@@ -101,8 +101,14 @@ def main() -> int:
     layer_duckdb = duckdb_dists[0].name.removeprefix("duckdb-").removesuffix(
         ".dist-info"
     )
-    local_duckdb = importlib.metadata.version("duckdb")
-    if layer_duckdb != local_duckdb:
+    try:
+        local_duckdb: str | None = importlib.metadata.version("duckdb")
+    except importlib.metadata.PackageNotFoundError:
+        # CI builds the layer without installing the dev environment; parity
+        # against the test suite's duckdb only makes sense where one exists.
+        print("note: duckdb not installed locally — skipping the parity check")
+        local_duckdb = None
+    if local_duckdb is not None and layer_duckdb != local_duckdb:
         print(
             f"ERROR: layer duckdb {layer_duckdb} != local {local_duckdb} — "
             "dev==prod parity broken (compare PLATFORMS with the wheel tags "

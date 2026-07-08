@@ -28,6 +28,24 @@ aws s3 cp tests/fixtures/dirty.csv s3://$(terraform output -raw data_bucket)/ord
 aws dynamodb scan --table-name $(terraform output -raw audit_table) --max-items 5
 ```
 
+## CI deploys via OIDC (optional, once per account)
+
+CI plans on PRs and applies on merge using short-lived OIDC credentials — no
+AWS keys stored in GitHub. Bootstrap the federation, then wire the repo:
+
+```sh
+cd terraform/bootstrap
+terraform init -backend-config=backend.hcl
+terraform apply
+# then run the two `gh variable set` commands from the output:
+terraform output github_variable_commands
+```
+
+Finally, in GitHub → Settings → Environments → `dev`, add yourself as a
+required reviewer. That approval gate is what the apply role's OIDC trust
+policy keys on (`sub = repo:...:environment:dev`) — without protection rules
+the workflow still works but applies without a human in the loop.
+
 ## Alarm: `*-dlq-depth` (message in the dead-letter queue)
 
 A message failed processing 3 times. This is **never** a bad data file

@@ -23,14 +23,18 @@ variable "max_receive_count" {
   default = 3
 }
 
+# SSE-SQS (SQS-managed keys): free, transparent to EventBridge — unlike
+# SSE-KMS, which would need key grants for the events.amazonaws.com principal.
 resource "aws_sqs_queue" "dlq" {
   name                      = "${var.name_prefix}-ingest-dlq"
   message_retention_seconds = 1209600 # 14 days to investigate + redrive
+  sqs_managed_sse_enabled   = true
 }
 
 resource "aws_sqs_queue" "ingest" {
   name                       = "${var.name_prefix}-ingest"
   visibility_timeout_seconds = var.visibility_timeout_seconds
+  sqs_managed_sse_enabled    = true
 
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.dlq.arn

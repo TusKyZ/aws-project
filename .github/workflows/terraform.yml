@@ -1,0 +1,150 @@
+# Terraform CI: validate + IaC scan on every change (no credentials), plan on
+# PRs, apply on main behind a protected GitHub environment. Plan/apply assume
+# short-lived OIDC roles (terraform/bootstrap) — no AWS keys in GitHub secrets.
+# Both jobs no-op until the AWS_*_ROLE_ARN repository variables are set.
+#
+# All actions are pinned to commit SHAs, not tags: the trivy-action tag-hijack
+# (March 2026, tags 0.0.1–0.34.2 compromised) showed tags are a mutable attack
+# surface. Dependabot bumps the SHAs.
+
+name: Terraform
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - "src/**"
+      - "scripts/build_lambda_layer.py"
+      - "requirements.txt"
+      - ".github/workflows/terraform.yml"
+      - ".trivyignore"
+  pull_request:
+    paths:
+      - "terraform/**"
+      - "src/**"
+      - "scripts/build_lambda_layer.py"
+      - "requirements.txt"
+      - ".github/workflows/terraform.yml"
+      - ".trivyignore"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: "1.15.7"
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+        working-directory: terraform
+
+      - name: Validate main stack
+        working-directory: terraform
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - name: Validate bootstrap
+        working-directory: terraform/bootstrap
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - name: IaC security scan (trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: terraform
+          severity: MEDIUM,HIGH,CRITICAL
+          exit-code: "1"
+          trivyignores: .trivyignore
+
+  plan:
+    if: github.event_name == 'pull_request' && vars.AWS_PLAN_ROLE_ARN != ''
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - name: Build Lambda layer (plan hashes it)
+        run: python scripts/build_lambda_layer.py
+
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: "1.15.7"
+
+      - uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d # v6
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Terraform plan (read-only role, no state lock)
+        working-directory: terraform
+        run: |
+          terraform init -backend-config=envs/dev.backend.hcl -input=false
+          terraform plan -var-file=envs/dev.tfvars -lock=false -input=false -no-color -out=tfplan
+
+      - name: Publish plan to run summary
+        working-directory: terraform
+        run: |
+          {
+            echo '```'
+            terraform show -no-color tfplan
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply:
+    if: github.event_name == 'push' && vars.AWS_APPLY_ROLE_ARN != ''
+    needs: validate
+    runs-on: ubuntu-latest
+    # Protect this environment with a required reviewer — the approval gate is
+    # what the apply role's OIDC trust policy keys on (sub=environment:dev).
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - name: Build Lambda layer
+        run: python scripts/build_lambda_layer.py
+
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: "1.15.7"
+
+      - uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d # v6
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Terraform apply
+        working-directory: terraform
+        run: |
+          terraform init -backend-config=envs/dev.backend.hcl -input=false
+          terraform apply -var-file=envs/dev.tfvars -input=false -auto-approve

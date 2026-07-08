@@ -19,6 +19,11 @@ resource "aws_dynamodb_table" "audit" {
     attribute_name = "expires_at"
     enabled        = true
   }
+
+  # Billed per GB of table data — effectively free at audit-record sizes.
+  point_in_time_recovery {
+    enabled = true
+  }
 }
 
 output "table_name" {

@@ -125,6 +125,15 @@ It pins exact provider versions *and* their cryptographic hashes, so every machi
 ### "You develop on Windows. How do you build Linux binaries for Lambda?"
 `pip install --platform manylinux_* --python-version 3.13 --only-binary=:all:` cross-installs Linux wheels from any OS — no Docker needed because nothing compiles locally. The trap I actually hit: requesting only `manylinux2014` made pip silently *downgrade* DuckDB from 1.5.4 to 1.2.2, because newer DuckDB ships only `manylinux_2_28` wheels (fine on Lambda: python3.13 runs Amazon Linux 2023, glibc 2.34). The build script now accepts every manylinux tag up to that glibc ceiling and hard-fails if the layer's DuckDB version differs from the one the test suite runs against — dev==prod parity enforced by the build, not by hope.
 
+### "How does your CI authenticate to AWS?"
+GitHub OIDC federation — zero stored AWS credentials anywhere in the repo or its secrets. Two roles with different trust policies: `sentinel-ci-plan` is assumable only from `pull_request` runs and carries `ReadOnlyAccess`, which deliberately excludes `secretsmanager:GetSecretValue` — a malicious PR that edits the workflow still cannot exfiltrate the API key. `sentinel-ci-apply` is assumable only when the OIDC token's `sub` claim reads `environment:dev`, and GitHub only mints that claim after the environment's required reviewer approves the run — the human approval *is* the security boundary. The apply role carries `AdministratorAccess` as a documented solo-project tradeoff (trust policy + gate is the real control); production hardening would add a permissions boundary or service-scoped policy. Plans run `-lock=false`, so the read-only role genuinely needs no state-write access.
+
+### "Why are your GitHub Actions pinned to commit SHAs instead of tags?"
+Because of a real incident: in March 2026 `aquasecurity/trivy-action` had ~75 existing release tags hijacked and pointed at a credential-stealing payload (versions 0.0.1–0.34.2). Tags are mutable pointers; commit SHAs are content-addressed and can't be moved. Dependabot still upgrades them weekly (it rewrites the SHA + version comment). The detail that lands in interviews: the compromised action is the exact IaC scanner this repo runs — pinned to a post-incident release protected by GitHub's immutable-releases feature.
+
+### "Your own security scanner flagged your Terraform. What did it find?"
+Six findings (trivy, MEDIUM+), all fixed in code, zero suppressed. The instructive one: unencrypted SNS topic — the lazy fix (`alias/aws/sns`) silently breaks alerting because CloudWatch alarms and AWS Budgets can't use the AWS-managed key (you can't grant service principals in its key policy). So: one project CMK with `cloudwatch.amazonaws.com` + `budgets.amazonaws.com` grants conditioned on `aws:SourceAccount`, shared by the S3 data bucket (`bucket_key_enabled` cuts KMS calls ~99%). SQS deliberately got SSE-SQS instead of KMS — free, and EventBridge publishes to it without key grants. Plus: bucket versioning with a lifecycle rule so it isn't a storage-cost leak, DynamoDB PITR (≈free at audit-record sizes), and an explicit log group with 30-day retention — which also let me drop `logs:CreateLogGroup` from the function role so a retention-less group can never come back.
+
 ### "What breaks first at scale?"
 In order: Anthropic rate limits (mitigated by reserved concurrency acting as natural throttle), Lambda 15-min cap on huge files (partial profile → Fargate path), DynamoDB hot partition if one bucket prefix dominates (key already includes full path, distributing load). Having this ordered list ready signals systems thinking.
 
@@ -136,3 +145,13 @@ In order: Anthropic rate limits (mitigated by reserved concurrency acting as nat
 - **Single-region, no DR story** — fine for scope, but know the answer (DynamoDB global tables, multi-region S3 replication) if asked.
 - **Score calibration** — `data_quality_score` from an LLM is not calibrated. The eval measures anomaly detection, not score accuracy. Acknowledge if pressed.
 - **The LLM layer is still replaceable** — the strongest version of this project is the eval table proving the hybrid beats rules-only. If those numbers don't materialize, the honest move is to report it anyway; "I measured it and the rules won on class X" is a *better* interview story than unmeasured claims.
+
+---
+
+## 4. Resume Bullets (draft — replace TBDs after deploy + full eval)
+
+- Built an event-driven data-quality pipeline on AWS (S3 → EventBridge → SQS → Lambda → DynamoDB) that profiles files with DuckDB in-Lambda and generates root-cause explanations via Claude Opus 4.8 structured outputs; 66 tests run offline at zero AWS cost.
+- Designed a 4-arm evaluation harness (rules / LLM / hybrid / hybrid-Sonnet) over a 500-file labeled corpus; measured rules-only baseline at 0.67 macro-F1 with 0% clean-file false positives, quantifying the LLM's marginal value on semantic anomaly classes. *(hybrid numbers TBD)*
+- Provisioned the stack with Terraform (6 modules + OIDC bootstrap, native S3 state locking, provider lock-pinning) and GitHub Actions CD: read-only plan on PRs, human-gated apply, zero stored cloud credentials, all actions SHA-pinned; trivy IaC scan clean after remediating 6 encryption/durability findings.
+- Engineered failure paths as first-class behavior: idempotent conditional writes (duplicate events never re-bill the LLM), API-key rotation with no redeploy, LLM-outage degradation to deterministic fallback scoring, partial-batch SQS retries, DLQ runbook with redrive procedure. *(p99 latency TBD)*
+- Cost-engineered to ≈$11/month infrastructure at 30K files/month via LLM skip-on-clean gating, KMS bucket keys, EMF metrics instead of PutMetricData, bounded log retention, and reserved concurrency as a spend throttle.

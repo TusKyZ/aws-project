@@ -1,0 +1,4 @@
+# Accepted-risk register for trivy IaC findings (referenced by terraform.yml).
+# Empty on purpose: every finding from the initial scan (6 across SNS/SQS/S3/
+# DynamoDB) was fixed in Terraform rather than suppressed. Add entries as
+# `AVD-AWS-XXXX` with a dated reason if a finding is ever consciously accepted.

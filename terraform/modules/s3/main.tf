@@ -2,8 +2,44 @@ variable "bucket_name" {
   type = string
 }
 
+variable "kms_key_arn" {
+  description = "Project CMK — the data bucket holds the actual user data."
+  type        = string
+}
+
 resource "aws_s3_bucket" "data" {
   bucket = var.bucket_name
+}
+
+resource "aws_s3_bucket_versioning" "data" {
+  bucket = aws_s3_bucket.data.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+# Versioning without lifecycle rules is a storage-cost leak: expire noncurrent
+# versions and abandoned multipart uploads. Current-object retention stays the
+# uploader's business.
+resource "aws_s3_bucket_lifecycle_configuration" "data" {
+  bucket     = aws_s3_bucket.data.id
+  depends_on = [aws_s3_bucket_versioning.data]
+
+  rule {
+    id     = "housekeeping"
+    status = "Enabled"
+
+    filter {}
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
 }
 
 resource "aws_s3_bucket_public_access_block" "data" {
@@ -20,8 +56,11 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "data" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = var.kms_key_arn
     }
+    # One data key per bucket instead of per object — cuts KMS API calls ~99%.
+    bucket_key_enabled = true
   }
 }
 
