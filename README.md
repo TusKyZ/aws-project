@@ -3,6 +3,8 @@
 Event-driven data quality pipeline: new files landing in S3 are profiled with DuckDB inside Lambda, checked by a deterministic rules engine, then analyzed by Claude Opus 4.8 for logical anomalies and human-readable root-cause explanations. Results land in a DynamoDB audit log; high-severity findings alert via Slack and email.
 
 > 🚧 Under construction — built in phases, see [Phases.md](Phases.md). Design: [implementation_plan.md](implementation_plan.md). Operations: [RUNBOOK.md](RUNBOOK.md).
+>
+> **Standing it up from zero?** Follow [GETTING_STARTED.md](GETTING_STARTED.md) — ordered checklist from empty AWS account to demonstrated failure drills, with per-stage costs.
 
 ## Architecture
 
@@ -31,7 +33,7 @@ Idempotency: audit key is `s3://bucket/key#etag` with conditional writes — dup
 - [x] Phase 1 — Core pipeline (DuckDB profiler + rules engine)
 - [x] Phase 2 — AI layer (Claude structured outputs) — live smoke pending API key (`pytest -m live`)
 - [x] Phase 3 — Eval harness — full-corpus rules baseline committed ([macro F1 0.67, 0% clean FPs](eval/results_rules_baseline.md)); LLM arms pending API key
-- [ ] Phase 4 — Infrastructure (Terraform) — **all code written and validated offline**: `terraform validate` clean (Terraform 1.15.7, AWS provider v6.53, providers lock-pinned for windows+linux), Lambda layer builds at 27 MB zipped / 78 MB unzipped with dev==prod DuckDB parity enforced; `terraform apply` pending an AWS account (deploy sequence in [RUNBOOK.md](RUNBOOK.md))
+- [ ] Phase 4 — Infrastructure (Terraform) — **all code written and validated offline**: `terraform validate` clean (Terraform 1.15.7, AWS provider v6.53, providers lock-pinned for windows+linux), Lambda layer builds at 27 MB zipped / 78 MB unzipped with dev==prod DuckDB parity enforced; `terraform apply` pending an AWS account ([GETTING_STARTED.md](GETTING_STARTED.md) stages 2–4)
 - [ ] Phase 5 — Hardening & observability — **offline half done**: OIDC CI roles (plan-on-PR read-only, apply human-gated), actions SHA-pinned, trivy IaC scan clean after fixing all 6 findings (CMK for S3+SNS, SSE-SQS, versioning+lifecycle, PITR, bounded log retention); failure-path drills + alarm/dashboard evidence need the deployed stack
 - [ ] Phase 6 — Full eval & ship — needs API key (~$20–35 Batches run) + deployed stack (demo GIF, p99)
 
@@ -54,6 +56,7 @@ Assumptions: 30K files/mo, ~5 MB each, us-east-1 prices (July 2026), `LLM_SKIP_O
 ## Development
 
 ```sh
+conda create -n aws python=3.13   # once; matches the Lambda runtime
 conda activate aws
 pip install -r requirements-dev.txt
 ruff check .

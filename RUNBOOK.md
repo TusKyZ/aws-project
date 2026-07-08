@@ -3,6 +3,9 @@
 Operational procedures for the deployed pipeline. Every alarm below notifies
 the `sentinel-<env>-alerts` SNS topic (email and/or Slack).
 
+First-time setup (account, state bucket, first deploy, drills):
+[GETTING_STARTED.md](GETTING_STARTED.md).
+
 ## Deploy / update
 
 ```sh
